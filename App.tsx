@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import * as XLSX from 'xlsx';
 import { parseSoilFile } from './parser';
 import { CULTURES, PROFILE_BY_KEY } from './profiles';
 import { calculateRecommendations, interpretSoil } from './calculators';
@@ -8,94 +7,6 @@ import { CultureKey, RecommendationKey, LimeMethod, LimeSource, SoilAnalysis } f
 import { InterpretationTable, RecommendationCards, recommendationLabels } from './components';
 
 const RECOMMENDATIONS: RecommendationKey[] = ['calagem', 'gessagem', 'camaFrango', 'fosforo', 'potassio', 'micros'];
-
-function normalizeText(value: unknown) {
-  return String(value ?? '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[.\-_]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function toNumber(value: unknown) {
-  if (value === null || value === undefined || value === '') return 0;
-  if (typeof value === 'number') return value;
-  return Number(String(value).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-}
-
-function isCtcPh7Label(value: unknown) {
-  const text = normalizeText(value);
-
-  return (
-    text.includes('c t c ph 7') ||
-    text.includes('ctc ph 7') ||
-    text.includes('ctc ph7') ||
-    text.includes('ctc a ph 7') ||
-    text.includes('ctc ph 7,0') ||
-    text.includes('ctc potencial') ||
-    text.includes('ctc total') ||
-    text === 't'
-  );
-}
-
-function convertCtcToCmol(value: number, unitText: string) {
-  const unit = normalizeText(unitText);
-
-  if (unit.includes('mmol')) return value / 10;
-
-  return value;
-}
-
-async function readCtcPh7FromFile(file: File): Promise<{ value: number; unit: string } | null> {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array' });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-
-  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
-
-  for (const row of rows) {
-    const nutrient = row[0];
-    const unit = String(row[1] ?? '');
-    const value = toNumber(row[2]);
-
-    if (isCtcPh7Label(nutrient) && value > 0) {
-      return {
-        value: convertCtcToCmol(value, unit),
-        unit: 'cmolc/dm³'
-      };
-    }
-  }
-
-  return null;
-}
-
-function applyCtcPh7(analysis: SoilAnalysis, ctc: { value: number; unit: string } | null): SoilAnalysis {
-  if (!ctc || ctc.value <= 0) return analysis;
-
-  const rows = analysis.rows.filter((row) => row.nutrient !== 'ctc');
-
-  rows.push({
-    nutrient: 'ctc',
-    originalName: 'C.T.C pH 7,0',
-    unit: 'cmolc/dm³',
-    value: ctc.value
-  });
-
-  return {
-    ...analysis,
-    rows,
-    values: {
-      ...analysis.values,
-      ctc: ctc.value
-    },
-    units: {
-      ...analysis.units,
-      ctc: 'cmolc/dm³'
-    }
-  };
-}
 
 export default function App() {
   const [analysis, setAnalysis] = useState<SoilAnalysis | null>(null);
@@ -126,9 +37,7 @@ export default function App() {
 
     try {
       const parsed = await parseSoilFile(file);
-      const ctcPh7 = await readCtcPh7FromFile(file);
-      const correctedAnalysis = applyCtcPh7(parsed, ctcPh7);
-      setAnalysis(correctedAnalysis);
+      setAnalysis(parsed);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao ler a planilha.');
     }
@@ -177,28 +86,41 @@ export default function App() {
     setIsExporting(true);
     setError('');
 
-    const styleId = 'pdf-page-break-style';
+    let spacer: HTMLDivElement | null = null;
 
     try {
-      let style = document.getElementById(styleId) as HTMLStyleElement | null;
+      const report = document.getElementById('report-area');
+      const recommendationSection = document.getElementById('recommendation-final-section');
 
-      if (!style) {
-        style = document.createElement('style');
-        style.id = styleId;
-        style.innerHTML = `
-          .pdf-page-break-before {
-            break-before: page !important;
-            page-break-before: always !important;
-          }
+      if (report && recommendationSection) {
+        const reportWidthPx = report.getBoundingClientRect().width;
 
-          @media print {
-            .pdf-page-break-before {
-              break-before: page !important;
-              page-break-before: always !important;
-            }
-          }
-        `;
-        document.head.appendChild(style);
+        const pageHeightPx = reportWidthPx * (297 / 210);
+
+        const reportTop = report.getBoundingClientRect().top + window.scrollY;
+        const recommendationTop = recommendationSection.getBoundingClientRect().top + window.scrollY;
+
+        const recommendationOffset = recommendationTop - reportTop;
+        const currentPagePosition = recommendationOffset % pageHeightPx;
+
+        let spacerHeight = pageHeightPx - currentPagePosition + 24;
+
+        if (currentPagePosition < 40) {
+          spacerHeight = 0;
+        }
+
+        if (spacerHeight > 0) {
+          spacer = document.createElement('div');
+          spacer.id = 'pdf-temporary-page-spacer';
+          spacer.style.height = `${spacerHeight}px`;
+          spacer.style.width = '100%';
+          spacer.style.display = 'block';
+          spacer.style.background = 'transparent';
+
+          recommendationSection.parentElement?.insertBefore(spacer, recommendationSection);
+
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
       }
 
       await exportReportToPdf(
@@ -208,6 +130,10 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Não foi possível gerar o PDF.');
     } finally {
+      if (spacer) {
+        spacer.remove();
+      }
+
       setIsExporting(false);
     }
   }
@@ -378,13 +304,7 @@ export default function App() {
           )}
         </section>
 
-        <section
-          className="panel white pdf-page-break-before"
-          style={{
-            breakBefore: 'page',
-            pageBreakBefore: 'always'
-          }}
-        >
+        <section id="recommendation-final-section" className="panel white">
           <h2>4. Recomendação final</h2>
           <RecommendationCards results={recommendations} />
         </section>
