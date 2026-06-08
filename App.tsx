@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { parseSoilFile } from './parser';
 import { CULTURES, PROFILE_BY_KEY } from './profiles';
 import { calculateRecommendations, interpretSoil } from './calculators';
@@ -7,6 +8,138 @@ import { CultureKey, RecommendationKey, LimeMethod, LimeSource, SoilAnalysis } f
 import { InterpretationTable, RecommendationCards, recommendationLabels } from './components';
 
 const RECOMMENDATIONS: RecommendationKey[] = ['calagem', 'gessagem', 'camaFrango', 'fosforo', 'potassio', 'micros'];
+
+function normalizeText(value: unknown) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[.\-_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toNumber(value: unknown) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return value;
+  const cleaned = String(value).replace(',', '.').replace(/[^\d.-]/g, '');
+  return Number(cleaned) || 0;
+}
+
+function isCtcPh7Label(value: unknown) {
+  const text = normalizeText(value);
+
+  return (
+    text.includes('ctc ph 7') ||
+    text.includes('ctc a ph 7') ||
+    text.includes('ctc ph7') ||
+    text.includes('ctc potencial') ||
+    text.includes('ctc total') ||
+    text === 't' ||
+    text.includes('t cmolc') ||
+    text.includes('t mmol')
+  );
+}
+
+function convertCtcToCmol(value: number, unitText: string) {
+  const unit = normalizeText(unitText);
+
+  if (unit.includes('mmol')) {
+    return value / 10;
+  }
+
+  if (value > 40) {
+    return value / 10;
+  }
+
+  return value;
+}
+
+async function readCtcPh7FromFile(file: File): Promise<number | null> {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
+
+  for (const row of rows) {
+    for (let col = 0; col < row.length; col++) {
+      if (isCtcPh7Label(row[col])) {
+        const unitText = `${row[col]} ${row[col + 1] ?? ''} ${row[col - 1] ?? ''}`;
+
+        for (let offset = 1; offset <= 5; offset++) {
+          const possibleValue = toNumber(row[col + offset]);
+
+          if (possibleValue > 0) {
+            return convertCtcToCmol(possibleValue, unitText);
+          }
+        }
+      }
+    }
+  }
+
+  const objectRows = XLSX.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, any>[];
+
+  for (const row of objectRows) {
+    const keys = Object.keys(row);
+
+    for (const key of keys) {
+      if (isCtcPh7Label(key)) {
+        const value = toNumber(row[key]);
+        if (value > 0) {
+          return convertCtcToCmol(value, key);
+        }
+      }
+    }
+
+    const nutrientKey = keys.find((key) => {
+      const normalized = normalizeText(key);
+      return (
+        normalized.includes('nutriente') ||
+        normalized.includes('determinacao') ||
+        normalized.includes('atributo') ||
+        normalized.includes('parametro')
+      );
+    });
+
+    const valueKey = keys.find((key) => {
+      const normalized = normalizeText(key);
+      return normalized === 'valor' || normalized.includes('resultado') || normalized.includes('teor');
+    });
+
+    const unitKey = keys.find((key) => {
+      const normalized = normalizeText(key);
+      return normalized.includes('u m') || normalized.includes('unidade');
+    });
+
+    if (nutrientKey && valueKey && isCtcPh7Label(row[nutrientKey])) {
+      const value = toNumber(row[valueKey]);
+      const unitText = unitKey ? String(row[unitKey]) : String(row[nutrientKey]);
+
+      if (value > 0) {
+        return convertCtcToCmol(value, unitText);
+      }
+    }
+  }
+
+  return null;
+}
+
+function applyCtcPh7(analysis: SoilAnalysis, ctcPh7: number | null): SoilAnalysis {
+  if (!ctcPh7 || ctcPh7 <= 0) return analysis;
+
+  const corrected: any = {
+    ...analysis,
+    ctcPh7,
+    ctcPH7: ctcPh7,
+    ctcph7: ctcPh7,
+    ctc: ctcPh7,
+    CTC: ctcPh7,
+    t: ctcPh7,
+    T: ctcPh7
+  };
+
+  return corrected as SoilAnalysis;
+}
 
 export default function App() {
   const [analysis, setAnalysis] = useState<SoilAnalysis | null>(null);
@@ -37,7 +170,9 @@ export default function App() {
 
     try {
       const parsed = await parseSoilFile(file);
-      setAnalysis(parsed);
+      const ctcPh7 = await readCtcPh7FromFile(file);
+      const correctedAnalysis = applyCtcPh7(parsed, ctcPh7);
+      setAnalysis(correctedAnalysis);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao ler a planilha.');
     }
