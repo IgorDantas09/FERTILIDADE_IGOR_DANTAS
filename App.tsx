@@ -22,123 +22,79 @@ function normalizeText(value: unknown) {
 function toNumber(value: unknown) {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') return value;
-  const cleaned = String(value).replace(',', '.').replace(/[^\d.-]/g, '');
-  return Number(cleaned) || 0;
+  return Number(String(value).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
 }
 
 function isCtcPh7Label(value: unknown) {
   const text = normalizeText(value);
 
   return (
+    text.includes('c t c ph 7') ||
     text.includes('ctc ph 7') ||
-    text.includes('ctc a ph 7') ||
     text.includes('ctc ph7') ||
+    text.includes('ctc a ph 7') ||
+    text.includes('ctc ph 7,0') ||
     text.includes('ctc potencial') ||
     text.includes('ctc total') ||
-    text === 't' ||
-    text.includes('t cmolc') ||
-    text.includes('t mmol')
+    text === 't'
   );
 }
 
 function convertCtcToCmol(value: number, unitText: string) {
   const unit = normalizeText(unitText);
 
-  if (unit.includes('mmol')) {
-    return value / 10;
-  }
-
-  if (value > 40) {
-    return value / 10;
-  }
+  if (unit.includes('mmol')) return value / 10;
 
   return value;
 }
 
-async function readCtcPh7FromFile(file: File): Promise<number | null> {
+async function readCtcPh7FromFile(file: File): Promise<{ value: number; unit: string } | null> {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
 
   for (const row of rows) {
-    for (let col = 0; col < row.length; col++) {
-      if (isCtcPh7Label(row[col])) {
-        const unitText = `${row[col]} ${row[col + 1] ?? ''} ${row[col - 1] ?? ''}`;
+    const nutrient = row[0];
+    const unit = String(row[1] ?? '');
+    const value = toNumber(row[2]);
 
-        for (let offset = 1; offset <= 5; offset++) {
-          const possibleValue = toNumber(row[col + offset]);
-
-          if (possibleValue > 0) {
-            return convertCtcToCmol(possibleValue, unitText);
-          }
-        }
-      }
-    }
-  }
-
-  const objectRows = XLSX.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, any>[];
-
-  for (const row of objectRows) {
-    const keys = Object.keys(row);
-
-    for (const key of keys) {
-      if (isCtcPh7Label(key)) {
-        const value = toNumber(row[key]);
-        if (value > 0) {
-          return convertCtcToCmol(value, key);
-        }
-      }
-    }
-
-    const nutrientKey = keys.find((key) => {
-      const normalized = normalizeText(key);
-      return (
-        normalized.includes('nutriente') ||
-        normalized.includes('determinacao') ||
-        normalized.includes('atributo') ||
-        normalized.includes('parametro')
-      );
-    });
-
-    const valueKey = keys.find((key) => {
-      const normalized = normalizeText(key);
-      return normalized === 'valor' || normalized.includes('resultado') || normalized.includes('teor');
-    });
-
-    const unitKey = keys.find((key) => {
-      const normalized = normalizeText(key);
-      return normalized.includes('u m') || normalized.includes('unidade');
-    });
-
-    if (nutrientKey && valueKey && isCtcPh7Label(row[nutrientKey])) {
-      const value = toNumber(row[valueKey]);
-      const unitText = unitKey ? String(row[unitKey]) : String(row[nutrientKey]);
-
-      if (value > 0) {
-        return convertCtcToCmol(value, unitText);
-      }
+    if (isCtcPh7Label(nutrient) && value > 0) {
+      return {
+        value: convertCtcToCmol(value, unit),
+        unit: 'cmolc/dm³'
+      };
     }
   }
 
   return null;
 }
 
-function applyCtcPh7(analysis: SoilAnalysis, ctcPh7: number | null): SoilAnalysis {
-  if (!ctcPh7 || ctcPh7 <= 0) return analysis;
+function applyCtcPh7(analysis: SoilAnalysis, ctc: { value: number; unit: string } | null): SoilAnalysis {
+  if (!ctc || ctc.value <= 0) return analysis;
 
-  const corrected: any = {
+  const rows = analysis.rows.filter((row) => row.nutrient !== 'ctc');
+
+  rows.push({
+    nutrient: 'ctc',
+    originalName: 'C.T.C pH 7,0',
+    unit: 'cmolc/dm³',
+    value: ctc.value
+  });
+
+  return {
     ...analysis,
-    ctcPh7,
-    ctcPH7: ctcPh7,
-    ctcph7: ctcPh7,
-    ctc: ctcPh7,
-    CTC: ctcPh7,
-    t: ctcPh7,
-    T: ctcPh7
+    rows,
+    values: {
+      ...analysis.values,
+      ctc: ctc.value
+    },
+    units: {
+      ...analysis.units,
+      ctc: 'cmolc/dm³'
+    }
   };
-
-  return corrected as SoilAnalysis;
 }
 
 export default function App() {
