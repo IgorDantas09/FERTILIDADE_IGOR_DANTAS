@@ -1,176 +1,268 @@
-import { useMemo, useState } from 'react';
-import { parseSoilFile } from './parser';
-import { CULTURES, PROFILE_BY_KEY } from './profiles';
-import { calculateRecommendations, interpretSoil } from './calculators';
-import { exportReportToPdf } from './pdf';
-import { CultureKey, RecommendationKey, LimeMethod, LimeSource, SoilAnalysis } from './types';
-import { InterpretationTable, RecommendationCards, recommendationLabels } from './components';
+const gerarPDF = () => {
+  const pdf = new jsPDF("p", "mm", "a4");
 
-const RECOMMENDATIONS: RecommendationKey[] = ['calagem', 'gessagem', 'camaFrango', 'fosforo', 'potassio', 'micros'];
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
 
-export default function App() {
-  const [analysis, setAnalysis] = useState<SoilAnalysis | null>(null);
-  const [error, setError] = useState('');
-  const [culture, setCulture] = useState<CultureKey>('mandioca');
-  const [selectedRecommendations, setSelectedRecommendations] = useState<RecommendationKey[]>(['calagem', 'fosforo', 'potassio']);
-  const [limeMethod, setLimeMethod] = useState<LimeMethod>('v_percent');
-  const [limeSource, setLimeSource] = useState<LimeSource>('dolomitico');
-  const [prnt, setPrnt] = useState(85);
-  const [targetV, setTargetV] = useState(60);
-  const [targetCaAbsolute, setTargetCaAbsolute] = useState(2.0);
-  const [poultryNPercent, setPoultryNPercent] = useState(3.0);
-  const [poultryEfficiency, setPoultryEfficiency] = useState(50);
-  const [isExporting, setIsExporting] = useState(false);
+  const margin = 14;
+  const contentWidth = pageWidth - margin * 2;
+  let y = 18;
 
-  const profile = PROFILE_BY_KEY[culture];
+  const addTitle = (title: string) => {
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(15);
+    pdf.setTextColor(20, 20, 20);
+    pdf.text(title, margin, y);
+    y += 8;
+  };
 
-  function onCultureChange(value: CultureKey) {
-    const next = PROFILE_BY_KEY[value];
-    setCulture(value);
-    setTargetV(next.targetV);
-    setTargetCaAbsolute(next.targetCaAbsolute);
-  }
+  const addText = (text: string, fontSize = 10) => {
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(fontSize);
+    pdf.setTextColor(70, 70, 70);
 
-  async function handleFile(file?: File) {
-    if (!file) return;
-    setError('');
-    try {
-      const parsed = await parseSoilFile(file);
-      setAnalysis(parsed);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao ler a planilha.');
+    const lines = pdf.splitTextToSize(text, contentWidth);
+    pdf.text(lines, margin, y);
+    y += lines.length * 5 + 3;
+  };
+
+  const checkPageBreak = (neededHeight: number) => {
+    if (y + neededHeight > pageHeight - 15) {
+      pdf.addPage();
+      y = 18;
     }
-  }
+  };
 
-  function toggleRecommendation(key: RecommendationKey) {
-    setSelectedRecommendations((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
-  }
+  const addCard = (
+    title: string,
+    mainValue: string,
+    details: string[],
+    formula?: string
+  ) => {
+    const cardHeight = 48 + details.length * 5 + (formula ? 10 : 0);
 
-  const interpretation = useMemo(() => analysis ? interpretSoil(analysis) : [], [analysis]);
-  const recommendations = useMemo(() => {
-    if (!analysis) return [];
-    return calculateRecommendations(analysis, profile, {
-      selectedRecommendations,
-      limeMethod,
-      limeSource,
-      prnt,
-      targetV,
-      targetCaAbsolute,
-      poultryNPercent,
-      poultryEfficiency
+    checkPageBreak(cardHeight);
+
+    pdf.setDrawColor(220, 230, 220);
+    pdf.setFillColor(250, 253, 250);
+    pdf.roundedRect(margin, y, contentWidth, cardHeight, 4, 4, "FD");
+
+    let cardY = y + 8;
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(11);
+    pdf.setTextColor(35, 45, 35);
+    pdf.text(title, margin + 5, cardY);
+
+    cardY += 8;
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(15);
+    pdf.setTextColor(20, 90, 45);
+    pdf.text(mainValue, margin + 5, cardY);
+
+    cardY += 9;
+
+    if (formula) {
+      pdf.setFont("courier", "normal");
+      pdf.setFontSize(8);
+      pdf.setTextColor(80, 90, 80);
+      pdf.setFillColor(238, 246, 238);
+      pdf.roundedRect(margin + 5, cardY - 5, contentWidth - 10, 8, 2, 2, "F");
+      pdf.text(formula, margin + 8, cardY);
+      cardY += 10;
+    }
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.setTextColor(70, 70, 70);
+
+    details.forEach((item) => {
+      const lines = pdf.splitTextToSize(`• ${item}`, contentWidth - 15);
+      pdf.text(lines, margin + 8, cardY);
+      cardY += lines.length * 5;
     });
-  }, [analysis, profile, selectedRecommendations, limeMethod, limeSource, prnt, targetV, targetCaAbsolute, poultryNPercent, poultryEfficiency]);
 
-  async function handlePdf() {
-    setIsExporting(true);
-    try {
-      await exportReportToPdf('report-area', `laudo-solo-${profile.name.toLowerCase().replaceAll(' ', '-')}.pdf`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Não foi possível gerar o PDF.');
-    } finally {
-      setIsExporting(false);
-    }
+    y += cardHeight + 6;
+  };
+
+  // CAPA / CABEÇALHO
+  pdf.setFillColor(18, 90, 45);
+  pdf.rect(0, 0, pageWidth, 24, "F");
+
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(16);
+  pdf.setTextColor(255, 255, 255);
+  pdf.text("Laudo de Recomendação de Correção do Solo", margin, 15);
+
+  y = 34;
+
+  addTitle("1. Identificação da análise");
+
+  addText(`Cultura selecionada: ${culturaSelecionada || "Não informada"}`);
+  addText(`Método de calagem: ${metodoCalagem || "Não informado"}`);
+  addText(`Fonte de calcário: ${tipoCalcario || "Não informado"}`);
+  addText(`PRNT utilizado: ${prnt || 85}%`);
+
+  checkPageBreak(35);
+
+  addTitle("2. Interpretação da fertilidade");
+
+  autoTable(pdf, {
+    startY: y,
+    head: [["Nutriente", "Unidade", "Valor", "Classificação"]],
+    body: interpretacoes.map((item: any) => [
+      item.nutriente,
+      item.unidade,
+      String(item.valor),
+      item.classe,
+    ]),
+    theme: "grid",
+    styles: {
+      fontSize: 8,
+      cellPadding: 2,
+    },
+    headStyles: {
+      fillColor: [18, 90, 45],
+      textColor: [255, 255, 255],
+    },
+    didParseCell: function (data) {
+      if (data.section === "body" && data.column.index === 3) {
+        const value = String(data.cell.raw).toLowerCase();
+
+        if (value.includes("baixo")) {
+          data.cell.styles.textColor = [180, 30, 30];
+          data.cell.styles.fontStyle = "bold";
+        }
+
+        if (value.includes("médio") || value.includes("medio")) {
+          data.cell.styles.textColor = [190, 130, 20];
+          data.cell.styles.fontStyle = "bold";
+        }
+
+        if (value.includes("alto")) {
+          data.cell.styles.textColor = [20, 120, 60];
+          data.cell.styles.fontStyle = "bold";
+        }
+      }
+    },
+  });
+
+  y = (pdf as any).lastAutoTable.finalY + 12;
+
+  checkPageBreak(40);
+
+  addTitle("3. Observações da análise");
+
+  addText(
+    "A interpretação dos nutrientes foi realizada com base nos parâmetros técnicos configurados no sistema para a cultura selecionada. Nutrientes classificados como baixos indicam maior probabilidade de resposta à adubação ou correção."
+  );
+
+  // FORÇA A RECOMENDAÇÃO FINAL COMEÇAR EM NOVA PÁGINA
+  pdf.addPage();
+  y = 18;
+
+  addTitle("4. Recomendação final");
+
+  if (resultadoCalagem) {
+    addCard(
+      "Recomendação de Calagem",
+      `${resultadoCalagem.dose.toFixed(2)} t/ha de Calcário ${tipoCalcario}`,
+      [
+        `CTC pH 7,0: ${analiseSolo.ctc || 0} cmolc/dm³`,
+        `Ca atual: ${analiseSolo.ca || 0} cmolc/dm³`,
+        `V% atual: ${analiseSolo.v || 0}%`,
+        `PRNT utilizado: ${prnt || 85}%`,
+      ],
+      resultadoCalagem.formula
+    );
   }
 
-  return (
-    <main className="app">
-      <header className="hero">
-        <div>
-          <span className="eyebrow">AgroInData</span>
-          <h1>Sistema online de recomendação de correção de solo</h1>
-          <p>Faça upload da análise, selecione a cultura, gere a interpretação visual e exporte o laudo técnico em PDF.</p>
-        </div>
-        <div className="hero-card">
-          <strong>Modelo aceito</strong>
-          <span>Excel, XLSX, XLS ou ODS com colunas: Nutriente, U.M. e Valor.</span>
-        </div>
-      </header>
+  if (resultadoGessagem) {
+    addCard(
+      "Recomendação de Gessagem",
+      `${resultadoGessagem.dose.toFixed(2)} t/ha de gesso agrícola`,
+      [
+        `CTC efetiva: ${analiseSolo.ctce || 0} cmolc/dm³`,
+        `Ca atual: ${analiseSolo.ca || 0} cmolc/dm³`,
+        "Cálculo baseado no equilíbrio de cálcio na CTC efetiva.",
+      ],
+      "NG = (0,6 × CTCe - Ca) × 6,4"
+    );
+  }
 
-      <section className="panel">
-        <h2>1. Upload da análise</h2>
-        <label className="upload-box">
-          <input type="file" accept=".xlsx,.xls,.ods,.csv" onChange={(e) => handleFile(e.target.files?.[0])} />
-          <span>{analysis?.fileName || 'Clique para carregar a planilha de análise de solo'}</span>
-        </label>
-        {error && <div className="error-box">{error}</div>}
-      </section>
+  if (resultadoFosforo) {
+    addCard(
+      "Recomendação de Fósforo",
+      `${resultadoFosforo.p2o5} kg/ha de P₂O₅`,
+      [
+        `Classe de P: ${resultadoFosforo.classe}`,
+        `Superfosfato simples, 18% P₂O₅: ${resultadoFosforo.sfs} kg/ha`,
+        `Superfosfato triplo, 41% P₂O₅: ${resultadoFosforo.sft} kg/ha`,
+      ]
+    );
+  }
 
-      <section className="panel controls">
-        <h2>2. Seleção da cultura e módulos</h2>
-        <div className="form-grid">
-          <label>
-            Cultura
-            <select value={culture} onChange={(e) => onCultureChange(e.target.value as CultureKey)}>
-              {CULTURES.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}
-            </select>
-          </label>
-          <label>
-            Método de calagem
-            <select value={limeMethod} onChange={(e) => setLimeMethod(e.target.value as LimeMethod)}>
-              <option value="ca_ctc">Ca na CTC</option>
-              <option value="v_percent">Saturação por Bases (V%)</option>
-              <option value="ca_absoluto">Ca Absoluto</option>
-            </select>
-          </label>
-          <label>
-            Fonte de calcário
-            <select value={limeSource} onChange={(e) => setLimeSource(e.target.value as LimeSource)}>
-              <option value="magnesiano">Magnesiano</option>
-              <option value="dolomitico">Dolomítico</option>
-              <option value="calcitico">Calcítico</option>
-            </select>
-          </label>
-          <label>PRNT (%)<input type="number" value={prnt} onChange={(e) => setPrnt(Number(e.target.value))} /></label>
-          <label>V% desejado<input type="number" value={targetV} onChange={(e) => setTargetV(Number(e.target.value))} /></label>
-          <label>Ca alvo (cmolc/dm³)<input type="number" step="0.1" value={targetCaAbsolute} onChange={(e) => setTargetCaAbsolute(Number(e.target.value))} /></label>
-          <label>N na cama de frango (%)<input type="number" step="0.1" value={poultryNPercent} onChange={(e) => setPoultryNPercent(Number(e.target.value))} /></label>
-          <label>Eficiência do N (%)<input type="number" value={poultryEfficiency} onChange={(e) => setPoultryEfficiency(Number(e.target.value))} /></label>
-        </div>
-        <div className="toggle-row">
-          {RECOMMENDATIONS.map((key) => (
-            <button key={key} className={selectedRecommendations.includes(key) ? 'toggle active' : 'toggle'} onClick={() => toggleRecommendation(key)}>
-              {recommendationLabels[key]}
-            </button>
-          ))}
-        </div>
-      </section>
+  if (resultadoPotassio) {
+    addCard(
+      "Recomendação de Potássio",
+      `${resultadoPotassio.k2o} kg/ha de K₂O`,
+      [
+        `Classe de K: ${resultadoPotassio.classe}`,
+        `Cloreto de potássio, 58% K₂O: ${resultadoPotassio.kcl} kg/ha`,
+      ]
+    );
+  }
 
-      <section id="report-area" className="report">
-        <div className="report-header">
-          <div>
-            <span className="eyebrow">Laudo técnico</span>
-            <h2>Interpretação da análise e recomendação final</h2>
-            <p>Cultura selecionada: <strong>{profile.name}</strong></p>
-          </div>
-          <div className="meta">
-            <span>Arquivo: {analysis?.fileName || 'não carregado'}</span>
-            <span>Data: {new Date().toLocaleDateString('pt-BR')}</span>
-          </div>
-        </div>
+  if (resultadoMicros) {
+    addCard(
+      "Recomendação de Micronutrientes",
+      "Correção conforme deficiência identificada",
+      resultadoMicros.map(
+        (m: any) => `${m.nutriente}: ${m.recomendacao}`
+      )
+    );
+  }
 
-        <section className="panel white">
-          <h2>3. Releitura da análise de solo</h2>
-          {analysis ? <InterpretationTable items={interpretation} /> : <div className="empty">Carregue uma análise para visualizar a classificação.</div>}
-        </section>
+  if (resultadoCamaFrango) {
+    addCard(
+      "Recomendação de Cama de Frango",
+      `${resultadoCamaFrango.dose.toFixed(2)} t/ha de cama de frango`,
+      [
+        `N requerido pela cultura: ${resultadoCamaFrango.nRequerido} kg/ha`,
+        `N médio da cama: ${resultadoCamaFrango.nMedio}%`,
+        `Eficiência considerada no primeiro cultivo: ${resultadoCamaFrango.eficiencia}%`,
+        `N efetivo estimado: ${resultadoCamaFrango.nEfetivo} kg/t`,
+      ],
+      "Dose = N requerido / (N total da cama × eficiência)"
+    );
+  }
 
-        <section className="panel white">
-          <h2>4. Recomendação final</h2>
-          <RecommendationCards results={recommendations} />
-        </section>
+  checkPageBreak(35);
 
-        <section className="panel white">
-          <h2>Observações técnicas</h2>
-          <ul className="notes">
-            {profile.notes.map((note) => <li key={note}>{note}</li>)}
-            <li>Quando a análise não traz argila, silte e areia, o sistema mantém a recomendação sem usar textura.</li>
-            <li>Valide os parâmetros com um responsável técnico antes de uso comercial.</li>
-          </ul>
-        </section>
-      </section>
+  addTitle("5. Observações técnicas");
 
-      <div className="action-bar">
-        <button className="primary" disabled={!analysis || isExporting} onClick={handlePdf}>{isExporting ? 'Gerando PDF...' : 'Gerar laudo em PDF'}</button>
-      </div>
-    </main>
+  addText(
+    "Este laudo deve ser utilizado como apoio técnico à tomada de decisão. Recomenda-se validar as doses com um responsável técnico, considerando histórico da área, produtividade esperada, textura do solo, sistema de manejo e disponibilidade dos corretivos e fertilizantes."
   );
-}
+
+  addText(
+    "Quando a análise não apresentar argila, silte ou areia, o sistema mantém a recomendação sem utilizar textura como fator de ajuste."
+  );
+
+  const totalPages = pdf.getNumberOfPages();
+
+  for (let i = 1; i <= totalPages; i++) {
+    pdf.setPage(i);
+    pdf.setFontSize(8);
+    pdf.setTextColor(120, 120, 120);
+    pdf.text(
+      `Página ${i} de ${totalPages}`,
+      pageWidth - margin - 25,
+      pageHeight - 8
+    );
+    pdf.text("AgroInData - Recomendação de Fertilidade", margin, pageHeight - 8);
+  }
+
+  pdf.save("laudo-recomendacao-solo.pdf");
+};
